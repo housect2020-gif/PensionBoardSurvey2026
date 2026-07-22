@@ -265,6 +265,11 @@
   const WORD_LIMIT = 1000;
   const LIKERT = ["Strongly agree","Agree","Neither","Disagree","Strongly disagree"];
 
+  // Paste your Apps Script Web App URL here after deploying (see DEPLOY_STEPS.md).
+  // Leave as-is and the survey still works locally (same-device save only, no email).
+  const BACKEND_URL = 'PASTE_YOUR_WEB_APP_URL_HERE';
+  const backendConfigured = BACKEND_URL.indexOf('https://') === 0;
+
   const SECTIONS = [
     {
       roman:"I",
@@ -351,6 +356,37 @@
   const token = getToken();
   document.getElementById('tokenBadge').textContent = 'your link is saved \u2014 bookmark it';
 
+  // ---- backend calls (Google Apps Script) ----
+  // Uses text/plain content-type on purpose: it keeps the request a CORS
+  // "simple request" so Apps Script (which can't handle OPTIONS preflight)
+  // still accepts it cross-origin from GitHub Pages.
+  async function postToBackend(payload){
+    if(!backendConfigured) return null;
+    try{
+      const res = await fetch(BACKEND_URL, {
+        method:'POST',
+        headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify(payload)
+      });
+      return await res.json();
+    }catch(e){
+      console.error('Backend POST failed:', e);
+      return null;
+    }
+  }
+
+  async function fetchDraftFromBackend(tok){
+    if(!backendConfigured) return null;
+    try{
+      const res = await fetch(BACKEND_URL + '?token=' + encodeURIComponent(tok));
+      const data = await res.json();
+      return (data && data.found) ? data.state : null;
+    }catch(e){
+      console.error('Backend GET failed:', e);
+      return null;
+    }
+  }
+
   // Uses window.storage when available (Claude artifact preview). Falls back to
   // localStorage when running as a normal hosted page (e.g. GitHub Pages).
   // NOTE: localStorage only persists on the same browser/device the respondent
@@ -359,6 +395,13 @@
   const hasArtifactStorage = (typeof window.storage !== 'undefined');
 
   async function loadSaved(){
+    // Cross-device source of truth first, if a backend is configured.
+    const remoteState = await fetchDraftFromBackend(token);
+    if(remoteState){
+      Object.assign(state, remoteState);
+      return;
+    }
+    // Fall back to whatever's saved locally (artifact preview or same-device GitHub test).
     try{
       let raw = null;
       if(hasArtifactStorage){
@@ -376,6 +419,19 @@
   }
 
   async function saveProgress(showNote){
+    if(backendConfigured){
+      const result = await postToBackend({action:'save', token, state});
+      if(result && result.ok){
+        if(showNote){
+          const note = document.getElementById('saveNote');
+          note.textContent = 'Progress saved. This link will resume where you left off, on any device.';
+          note.classList.add('show');
+          setTimeout(()=>note.classList.remove('show'), 3800);
+        }
+        return;
+      }
+      // backend call failed — fall through to local save as a safety net
+    }
     try{
       const payload = JSON.stringify({state, current});
       if(hasArtifactStorage){
@@ -442,7 +498,7 @@
             <button class="btn-primary" id="reviewBtn">Review &amp; submit</button>
           </div>
         </div>
-        <p class="device-note">Saved progress resumes on this same browser and device only \u2014 not if you switch device or browser.</p>
+        <p class="device-note">${backendConfigured ? 'Saved progress resumes on any device using this same link.' : 'Saved progress resumes on this same browser and device only \u2014 not if you switch device or browser.'}</p>
       `;
       const ta = document.getElementById('commentFinal');
       const wc = document.getElementById('wcFinal');
@@ -509,7 +565,7 @@
           <button class="btn-primary" id="nextBtn">Next</button>
         </div>
       </div>
-      <p class="device-note">Saved progress resumes on this same browser and device only \u2014 not if you switch device or browser.</p>
+      <p class="device-note">${backendConfigured ? 'Saved progress resumes on any device using this same link.' : 'Saved progress resumes on this same browser and device only \u2014 not if you switch device or browser.'}</p>
     `;
 
     s.questions.forEach((qtext, qi)=>{
@@ -614,31 +670,54 @@
 
   async function submitSurvey(){
     const text = buildPlainTextSummary();
-    try{
-      const payload = JSON.stringify({state, submittedAt:new Date().toISOString()});
-      if(hasArtifactStorage){
-        await window.storage.set('submitted:' + token, payload, false);
-      }else{
-        localStorage.setItem('submitted:' + token, payload);
-      }
-    }catch(e){}
+    let deliveredToBackend = false;
+
+    if(backendConfigured){
+      const result = await postToBackend({action:'submit', token, state});
+      deliveredToBackend = !!(result && result.ok);
+    }
+
+    if(!deliveredToBackend){
+      // Local-only fallback so nothing is lost even if the backend call failed.
+      try{
+        const payload = JSON.stringify({state, submittedAt:new Date().toISOString()});
+        if(hasArtifactStorage){
+          await window.storage.set('submitted:' + token, payload, false);
+        }else{
+          localStorage.setItem('submitted:' + token, payload);
+        }
+      }catch(e){}
+    }
 
     const card = document.getElementById('card');
     const blob = new Blob([text], {type:'text/plain'});
     const url = URL.createObjectURL(blob);
     const mailBody = encodeURIComponent(text).slice(0,1500);
 
-    card.innerHTML = `
-      <div class="done-screen">
-        <div class="check">&#10003;</div>
-        <div class="section-title" style="border:none;">Response recorded</div>
-        <p class="review-summary">Thank you \u2014 your answers have been compiled below. In this prototype, delivery to the Board Secretary's inbox needs to be connected to a live backend (see note under the form). For now, you can download or email this summary directly.</p>
-        <div class="controls" style="justify-content:center;">
-          <a href="${url}" download="pension-board-survey-response.txt"><button class="btn-ghost" type="button">Download response (.txt)</button></a>
-          <a href="mailto:jeanyvesd@gmail.com?subject=Pension%20Board%20Survey%202026%20Response&body=${mailBody}"><button class="btn-primary" type="button">Open email to jeanyvesd@gmail.com</button></a>
+    if(deliveredToBackend){
+      card.innerHTML = `
+        <div class="done-screen">
+          <div class="check">&#10003;</div>
+          <div class="section-title" style="border:none;">Response recorded</div>
+          <p class="review-summary">Thank you \u2014 your response has been submitted. It's included in the next daily summary sent to the Board Secretary. No further action is needed on your part.</p>
+          <div class="controls" style="justify-content:center;">
+            <a href="${url}" download="pension-board-survey-response.txt"><button class="btn-ghost" type="button">Download a copy for yourself (.txt)</button></a>
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }else{
+      card.innerHTML = `
+        <div class="done-screen">
+          <div class="check">&#10003;</div>
+          <div class="section-title" style="border:none;">Response recorded</div>
+          <p class="review-summary">Thank you \u2014 your answers have been compiled below. Automatic delivery isn't connected yet, so please download or email this summary directly for now.</p>
+          <div class="controls" style="justify-content:center;">
+            <a href="${url}" download="pension-board-survey-response.txt"><button class="btn-ghost" type="button">Download response (.txt)</button></a>
+            <a href="mailto:jeanyvesd@gmail.com?subject=Pension%20Board%20Survey%202026%20Response&body=${mailBody}"><button class="btn-primary" type="button">Open email to jeanyvesd@gmail.com</button></a>
+          </div>
+        </div>
+      `;
+    }
   }
 
   function renderAll(){
