@@ -343,11 +343,24 @@
   const token = getToken();
   document.getElementById('tokenBadge').textContent = 'your link is saved \u2014 bookmark it';
 
+  // Uses window.storage when available (Claude artifact preview). Falls back to
+  // localStorage when running as a normal hosted page (e.g. GitHub Pages).
+  // NOTE: localStorage only persists on the same browser/device the respondent
+  // used \u2014 it does NOT sync a "resume" link across devices or people. A shared,
+  // cross-device resume link needs a real backend (see chat notes).
+  const hasArtifactStorage = (typeof window.storage !== 'undefined');
+
   async function loadSaved(){
     try{
-      const res = await window.storage.get('survey:' + token, false);
-      if(res && res.value){
-        const data = JSON.parse(res.value);
+      let raw = null;
+      if(hasArtifactStorage){
+        const res = await window.storage.get('survey:' + token, false);
+        raw = res && res.value;
+      }else{
+        raw = localStorage.getItem('survey:' + token);
+      }
+      if(raw){
+        const data = JSON.parse(raw);
         Object.assign(state, data.state || {});
         current = data.current || 0;
       }
@@ -356,17 +369,25 @@
 
   async function saveProgress(showNote){
     try{
-      await window.storage.set('survey:' + token, JSON.stringify({state, current}), false);
+      const payload = JSON.stringify({state, current});
+      if(hasArtifactStorage){
+        await window.storage.set('survey:' + token, payload, false);
+      }else{
+        localStorage.setItem('survey:' + token, payload);
+      }
       if(showNote){
         const note = document.getElementById('saveNote');
-        note.textContent = 'Progress saved. This link will bring you back to where you left off.';
+        note.textContent = hasArtifactStorage
+          ? 'Progress saved. This link will bring you back to where you left off.'
+          : 'Progress saved on this device/browser. This link will resume here, but not on a different device.';
         note.classList.add('show');
-        setTimeout(()=>note.classList.remove('show'), 3200);
+        setTimeout(()=>note.classList.remove('show'), 3800);
       }
     }catch(e){
       const note = document.getElementById('saveNote');
-      note.textContent = 'Could not save progress right now \u2014 please finish in this session if possible.';
+      note.textContent = 'Could not save progress: ' + (e && (e.name + ' \u2014 ' + e.message) || 'unknown error') + '. Try a normal (non-private) browser window.';
       note.classList.add('show');
+      console.error('Survey save failed:', e);
     }
   }
 
@@ -584,7 +605,12 @@
   async function submitSurvey(){
     const text = buildPlainTextSummary();
     try{
-      await window.storage.set('submitted:' + token, JSON.stringify({state, submittedAt:new Date().toISOString()}), false);
+      const payload = JSON.stringify({state, submittedAt:new Date().toISOString()});
+      if(hasArtifactStorage){
+        await window.storage.set('submitted:' + token, payload, false);
+      }else{
+        localStorage.setItem('submitted:' + token, payload);
+      }
     }catch(e){}
 
     const card = document.getElementById('card');
