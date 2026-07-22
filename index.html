@@ -126,7 +126,11 @@
     color:var(--ink-deep);letter-spacing:-0.2px;
   }
 
-  .q{margin-bottom:30px;}
+  .q{margin-bottom:30px;padding:14px;margin-left:-14px;margin-right:-14px;border-radius:6px;transition:background .2s, box-shadow .2s;}
+  .q.missing{
+    background:#FBEEEE;box-shadow:0 0 0 1.5px var(--err) inset;
+  }
+  .q.missing .q-text{color:var(--err);}
   .q:last-of-type{margin-bottom:0;}
   .q-text{
     font-size:15.5px;line-height:1.5;color:var(--ink-deep);margin-bottom:14px;
@@ -609,7 +613,7 @@
       ta.addEventListener('input', ()=>{ state['final-comment']=ta.value; updateWC(); });
       updateWC();
 
-      document.getElementById('backBtn').onclick = ()=>{ current--; renderAll(); };
+      document.getElementById('backBtn').onclick = ()=>{ current--; renderAll(); scrollToTop(); };
       document.getElementById('saveBtn').onclick = ()=> saveProgress(true);
       document.getElementById('reviewBtn').onclick = ()=>{
         if(wordCount(ta.value) > WORD_LIMIT){
@@ -617,6 +621,7 @@
           return;
         }
         renderReview();
+        scrollToTop();
       };
       return;
     }
@@ -635,7 +640,7 @@
           </div>`;
       });
       qHTML += `
-        <div class="q">
+        <div class="q" id="qblock-${current}-${qi}">
           <div class="q-text">${qi+1}. ${qtext}<span class="req">*</span></div>
           <div class="likert">${optsHTML}</div>
         </div>`;
@@ -670,7 +675,15 @@
     s.questions.forEach((qtext, qi)=>{
       const name = `q-${current}-${qi}`;
       document.getElementsByName(name).forEach(r=>{
-        r.addEventListener('change', ()=>{ state[`${current}-${qi}`] = r.value; });
+        r.addEventListener('change', ()=>{
+          state[`${current}-${qi}`] = r.value;
+          const block = document.getElementById(`qblock-${current}-${qi}`);
+          if(block) block.classList.remove('missing');
+          if(!document.querySelector('.q.missing')){
+            const box = document.getElementById('errMsg');
+            if(box) box.classList.remove('show');
+          }
+        });
       });
     });
 
@@ -685,13 +698,14 @@
     updateWC();
 
     if(current>0){
-      document.getElementById('backBtn').onclick = ()=>{ current--; renderAll(); };
+      document.getElementById('backBtn').onclick = ()=>{ current--; renderAll(); scrollToTop(); };
     }
     document.getElementById('saveBtn').onclick = ()=> saveProgress(true);
     document.getElementById('nextBtn').onclick = ()=>{
-      const missing = s.questions.some((_,qi)=> !state[`${current}-${qi}`]);
-      if(missing){
-        showError('Please answer every question marked * before continuing.');
+      const missingIndex = s.questions.findIndex((_,qi)=> !state[`${current}-${qi}`]);
+      if(missingIndex !== -1){
+        showError('Question ' + (missingIndex+1) + ' response is required.');
+        highlightMissing(missingIndex);
         return;
       }
       if(wordCount(ta.value) > WORD_LIMIT){
@@ -700,7 +714,21 @@
       }
       current++;
       renderAll();
+      scrollToTop();
     };
+  }
+
+  function highlightMissing(qi){
+    document.querySelectorAll('.q.missing').forEach(el=>el.classList.remove('missing'));
+    const el = document.getElementById(`qblock-${current}-${qi}`);
+    if(el){
+      el.classList.add('missing');
+      el.scrollIntoView({behavior:'smooth', block:'center'});
+    }
+  }
+
+  function scrollToTop(){
+    window.scrollTo({top:0, left:0, behavior:'auto'});
   }
 
   function showError(msg){
@@ -742,7 +770,7 @@
       </div>
     `;
     card.innerHTML = html;
-    document.getElementById('backToSurvey').onclick = ()=>{ current = SECTIONS.length-1; renderAll(); };
+    document.getElementById('backToSurvey').onclick = ()=>{ current = SECTIONS.length-1; renderAll(); scrollToTop(); };
     document.getElementById('submitBtn').onclick = submitSurvey;
   }
 
